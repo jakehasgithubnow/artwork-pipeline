@@ -241,12 +241,30 @@ async def pipeline(photo: PhotoRow) -> None:
         meta = await analyse_painting(painted_png, photo.description or "", photo.description or "Berlin")
         art_uuid = str(uuid.uuid4())
         artwork_id = await create_artwork_record(meta, final_cld, art_uuid, photo.Id)
-        catch_id = getattr(photo, "Catchments_id", None)
-        loc_id   = getattr(photo, "locations_id", None)
+        # Determine Catchment ID (object or _id)
+        catch_id = None
+        if hasattr(photo, "Catchments_id"):
+            catch_id = getattr(photo, "Catchments_id")
+        elif hasattr(photo, "Catchments") and isinstance(photo.Catchments, dict):
+            catch_id = photo.Catchments.get("Id") or photo.Catchments.get("id")
+
+        # Determine Location ID (object or _id)
+        loc_id = None
+        if hasattr(photo, "locations_id"):
+            loc_id = getattr(photo, "locations_id")
+        elif hasattr(photo, "locations") and isinstance(photo.locations, dict):
+            loc_id = photo.locations.get("Id") or photo.locations.get("id")
+
+        # Link to Catchments and Locations
         if catch_id:
+            logging.info(f"Linking artwork {artwork_id} to Catchment ID {catch_id}")
             await link_artwork(NOCODB_CATCHMENTS_LINK, catch_id, artwork_id)
         if loc_id:
+            logging.info(f"Linking artwork {artwork_id} to Location ID {loc_id}")
             await link_artwork(NOCODB_LOCATIONS_LINK, loc_id, artwork_id)
+
+        # Link back to the original Photo record
+        logging.info(f"Linking artwork {artwork_id} to Photo ID {photo.Id}")
         await link_artwork(NOCODB_PHOTO_LINK, photo.Id, artwork_id)
     except Exception as ex:
         logging.error(f"Error in pipeline for photo {photo.Id}: {ex}", exc_info=True)
