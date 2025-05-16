@@ -188,7 +188,7 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
         "Is the format landscape (horizontal) or portrait (vertical)? respond ‘horizontal’ or ‘vertical’\n\n"
         "What is the main colour? respond with a single color\n\n"
         "What are the secondary colours? respond with a comma separated list of colours\n\n"
-        f"Write a short description of the piece. The scene is {desc}. "
+        f"Write a short description of the piece. The scene is {desc}.  "
         "Your description should feel contemporary and compelling. "
         f"It must be written in the language spoken in {location_name}.\n\n"
         "Write a simple title for the piece, highlighting the location. "
@@ -257,7 +257,7 @@ async def pipeline(photo: PhotoRow) -> None:
     logging.info(f"Starting pipeline for PhotoRow ID={photo.Id}")
     try:
         await mark_photo_not_ready(photo.Id)
-        src = await cloudinary_upload(photo.url)
+        src = await cloudinary_upload(photo.url, preset="basic_upload")
         if src is None:
             logging.error(f"Cloudinary upload failed for photo {photo.Id}; marking as failed and skipping.")
             return
