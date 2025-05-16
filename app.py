@@ -221,7 +221,7 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
     logging.info(f"Analysis result: {completion.choices[0].message.content}")
     return json.loads(completion.choices[0].message.content)
 
-async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: str, photo_id: int) -> int:
+async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: str, photo_id: int, catch_id: int, loc_id: int) -> int:
     logging.info(f"Creating artwork record for photo {photo_id} with UUID {uuid_str}")
 
     # Compute web-optimized version by injecting the transformation after "/upload/"
@@ -237,7 +237,9 @@ async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: 
         "other colours": meta["secondary_colours"],
         "painting style": meta["painting_style"],
         "format": meta["format"],
-        "locations photos": [str(photo_id)]
+        "locations photos": [photo_id],
+        "catchments":         [catch_id],
+        "locations":          [loc_id],
     }
     url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_ARTWORKS_TABLE}/records"
     res = await httpx_json("POST", url, headers=HEADERS_NOCODB, json=body)
@@ -270,8 +272,6 @@ async def pipeline(photo: PhotoRow) -> None:
             logging.error(f"Cloudinary upload of painting failed for photo {photo.Id}; marking as failed and skipping.")
             return
         meta = await analyse_painting(painted_png, photo.description or "", photo.description or "Berlin")
-        art_uuid = str(uuid.uuid4())
-        artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo.Id)
         # Determine Catchment ID (object or _id)
         catch_id = None
         if hasattr(photo, "Catchments_id"):
@@ -286,17 +286,8 @@ async def pipeline(photo: PhotoRow) -> None:
         elif hasattr(photo, "locations") and isinstance(photo.locations, dict):
             loc_id = photo.locations.get("Id") or photo.locations.get("id")
 
-        # Link to Catchments and Locations
-        if catch_id:
-            logging.info(f"Linking artwork {artwork_id} to Catchment ID {catch_id}")
-            await link_artwork(NOCODB_CATCHMENTS_LINK, catch_id, artwork_id)
-        if loc_id:
-            logging.info(f"Linking artwork {artwork_id} to Location ID {loc_id}")
-            await link_artwork(NOCODB_LOCATIONS_LINK, loc_id, artwork_id)
-
-        # Link back to the original Photo record
-        logging.info(f"Linking artwork {artwork_id} to Photo ID {photo.Id}")
-        await link_artwork(NOCODB_PHOTO_LINK, photo.Id, artwork_id)
+        art_uuid = str(uuid.uuid4())
+        artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo.Id, catch_id, loc_id)
 
         logging.info(f"Deleting source image from Cloudinary: {src_public_id}")
         cld_destroy(src_public_id)
