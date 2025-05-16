@@ -123,7 +123,7 @@ async def mark_photo_not_ready(photo_id: int) -> None:
         else:
             raise
 
-async def cloudinary_upload(url: str) -> Dict[str, str]:
+async def cloudinary_upload(url: str) -> Optional[Dict[str, str]]:
     logging.info(f"Uploading URL to Cloudinary: {url}")
     last_exc = None
     for attempt in range(1, 4):
@@ -139,7 +139,7 @@ async def cloudinary_upload(url: str) -> Dict[str, str]:
             last_exc = e
             await asyncio.sleep(1)
     logging.error(f"Failed to upload URL after 3 attempts: {url}")
-    raise last_exc
+    return None
 
 async def generate_painting(photo_url: str) -> str:
     async with _piapi_semaphore:
@@ -252,10 +252,16 @@ async def pipeline(photo: PhotoRow) -> None:
     try:
         await mark_photo_not_ready(photo.Id)
         src = await cloudinary_upload(photo.url)
+        if src is None:
+            logging.error(f"Cloudinary upload failed for photo {photo.Id}; marking as failed and skipping.")
+            return
         src_url = src["secure_url"]
         src_public_id = src["public_id"]
         painted_png = await generate_painting(src_url)
         final_cld = await cloudinary_upload(painted_png)
+        if final_cld is None:
+            logging.error(f"Cloudinary upload of painting failed for photo {photo.Id}; marking as failed and skipping.")
+            return
         meta = await analyse_painting(painted_png, photo.description or "", photo.description or "Berlin")
         art_uuid = str(uuid.uuid4())
         artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo.Id)
