@@ -238,8 +238,8 @@ async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: 
         "painting style": meta["painting_style"],
         "format": meta["format"],
         "locations photos": [photo_id],
-        "catchments":         [catch_id],
-        "locations":          [loc_id],
+        "Catchment":          [catch_id],
+        "location":           [loc_id],
     }
     url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_ARTWORKS_TABLE}/records"
     res = await httpx_json("POST", url, headers=HEADERS_NOCODB, json=body)
