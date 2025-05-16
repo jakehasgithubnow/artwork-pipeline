@@ -155,7 +155,7 @@ async def generate_painting(photo_url: str) -> str:
                         {"type": "image_url", "image_url": {"url": photo_url}},
                         {"type": "image_url", "image_url": {"url": "https://i.postimg.cc/ZYGSGGdd/image.png"}},
                         {"type": "text", "text": (
-                            "Attached is a photo of {location_name} and a style reference - a painting by David Bomberg. Paint the place like David Bomberg would. Simplify the composition focussing on simplified, flattened versions of the main shapes , avoid all clutter. Take influence from the colors in the photo as well as the colors in the attached style reference. Ignore clouds - paint the sky as a flat blue or grey. Output a 1024×1536 or 1536x 1024 image. Do not output any other resolution. "
+                            "Paint this like Matisse. Your output must be recognisable as {location_name} but you must change the composition as much as necessary for it to feel like a Matisse masterpiece- feel free to remove people, cars and all text. Ignore clouds, render the sky a flat blue or grey. Output a 16:9 rectangle (either orientation)."
                         )},
                     ],
                 }
