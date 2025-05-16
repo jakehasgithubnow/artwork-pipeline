@@ -123,15 +123,16 @@ async def mark_photo_not_ready(photo_id: int) -> None:
         else:
             raise
 
-async def cloudinary_upload(url: str) -> Optional[Dict[str, str]]:
+async def cloudinary_upload(url: str, preset: Optional[str] = None) -> Optional[Dict[str, str]]:
     logging.info(f"Uploading URL to Cloudinary: {url}")
     last_exc = None
     for attempt in range(1, 4):
         try:
             logging.info(f"Upload attempt {attempt} for URL: {url}")
-            res = cld_upload(
-                url
-            )
+            if preset:
+                res = cld_upload(url, upload_preset=preset)
+            else:
+                res = cld_upload(url)
             logging.info(f"Uploaded to Cloudinary: {res['secure_url']}")
             return {"secure_url": res["secure_url"], "public_id": res["public_id"]}
         except Exception as e:
@@ -258,7 +259,7 @@ async def pipeline(photo: PhotoRow) -> None:
         src_url = src["secure_url"]
         src_public_id = src["public_id"]
         painted_png = await generate_painting(src_url)
-        final_cld = await cloudinary_upload(painted_png)
+        final_cld = await cloudinary_upload(painted_png, preset=CLOUD_PRESET)
         if final_cld is None:
             logging.error(f"Cloudinary upload of painting failed for photo {photo.Id}; marking as failed and skipping.")
             return
