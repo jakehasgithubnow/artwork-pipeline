@@ -206,10 +206,15 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
         '  "title": "Sunset over Berlin"\n'
         "}"
     )
-    chat = [{"role":"user","content":prompt,"image_url":png_url,"image_detail":"auto","image_input_type":"url"}]
     completion = await client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=chat,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+                "image_url": png_url
+            }
+        ],
         temperature=1,
         top_p=1,
         response_format={"type":"json_object"},
