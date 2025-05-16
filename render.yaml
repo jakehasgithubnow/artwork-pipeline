@@ -1,0 +1,36 @@
+services:
+- type: web
+  name: artwork-pipeline
+  runtime: python
+  plan: starter
+  envVars:
+  - key: NOCODB_BASE_URL
+    sync: false
+  - key: NOCODB_API_TOKEN
+    sync: false
+  - key: NOCODB_PHOTO_TABLE
+    sync: false
+  - key: NOCODB_ARTWORKS_TABLE
+    sync: false
+  - key: NOCODB_CATCHMENTS_LINK
+    sync: false
+  - key: NOCODB_LOCATIONS_LINK
+    sync: false
+  - key: NOCODB_PHOTO_LINK
+    sync: false
+  - key: PIAPI_KEY
+    sync: false
+  - key: OPENAI_API_KEY
+    sync: false
+  - key: CLOUDINARY_CLOUD_NAME
+    sync: false
+  - key: CLOUDINARY_API_KEY
+    sync: false
+  - key: CLOUDINARY_API_SECRET
+    sync: false
+  - key: CLOUDINARY_UPLOAD_PRESET
+    sync: false
+  buildCommand: |
+    pip install -r requirements.txt
+  startCommand: |
+    uvicorn app:api --host 0.0.0.0 --port $PORT

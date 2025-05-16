@@ -1,0 +1,15 @@
+{
+  "id": "test-webhook-1",
+  "type": "create",
+  "data": {
+    "rows": [
+      {
+        "Id": 123,
+        "url": "https://fastly.picsum.photos/id/629/536/354.jpg?hmac=NWta_CV-ruzeQyb9CvcPbGAmrmMV66H8m9A2d_8rdpI",
+        "description": "A test location by the river",
+        "Catchments_id": 10,
+        "locations_id": 20
+      }
+    ]
+  }
+}
