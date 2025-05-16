@@ -223,9 +223,14 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
 
 async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: str, photo_id: int) -> int:
     logging.info(f"Creating artwork record for photo {photo_id} with UUID {uuid_str}")
+
+    # Compute web-optimized version by injecting the transformation after "/upload/"
+    webimage_url = cloud_url.replace("/upload/", "/upload/t_web_image/")
+
     body = {
         "uuid": uuid_str,
         "url": cloud_url,
+        "webimage": webimage_url,
         "title": meta["title"],
         "description": meta["description"],
         "main colour": meta["main_colour"],
