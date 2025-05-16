@@ -256,7 +256,6 @@ async def link_artwork(link_path: str, foreign_id: int, artwork_id: int) -> None
 async def pipeline(photo: PhotoRow) -> None:
     logging.info(f"Starting pipeline for PhotoRow ID={photo.Id}")
     try:
-        await mark_photo_not_ready(photo.Id)
         src = await cloudinary_upload(photo.url, preset="basic_upload")
         if src is None:
             logging.error(f"Cloudinary upload failed for photo {photo.Id}; marking as failed and skipping.")
@@ -299,6 +298,9 @@ async def pipeline(photo: PhotoRow) -> None:
 
         logging.info(f"Deleting source image from Cloudinary: {src_public_id}")
         cld_destroy(src_public_id)
+
+        # Mark photo as processed by setting ready to paint = false
+        await mark_photo_not_ready(photo.Id)
     except Exception as ex:
         logging.error(f"Error in pipeline for photo {photo.Id}: {ex}", exc_info=True)
         for attempt in range(2):
@@ -315,9 +317,17 @@ async def pipeline(photo: PhotoRow) -> None:
 # ---------------------------------------------------------------------------
 
 @api.post("/webhook")
-async def receive_webhook(payload: WebhookPayload, background_tasks: BackgroundTasks):
-    if not payload.data.rows:
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
+    payload = await request.json()
+    rows = payload.get("data", {}).get("rows", [])
+    if not rows:
         raise HTTPException(status_code=400, detail="No rows in payload")
-    row = payload.data.rows[0]
-    background_tasks.add_task(pipeline, row)
+    row = rows[0]
+    # Only trigger when ready to paint flag is set to true
+    if row.get("ready to paint") not in (True, "true"):
+        logging.info(f"Skipping pipeline for photo {row.get('Id')}: ready to paint not true")
+        return {"status": "skipped"}
+    # Parse into PhotoRow and queue
+    photo = PhotoRow.parse_obj(row)
+    background_tasks.add_task(pipeline, photo)
     return {"status": "queued"}
