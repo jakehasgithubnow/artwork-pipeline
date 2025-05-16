@@ -10,7 +10,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 import cloudinary
-from cloudinary.uploader import upload as cld_upload
+from cloudinary.uploader import upload as cld_upload, destroy as cld_destroy
 
 from dotenv import load_dotenv
 # Load local env first, then fallback to .env
@@ -123,19 +123,17 @@ async def mark_photo_not_ready(photo_id: int) -> None:
         else:
             raise
 
-async def cloudinary_upload(url: str) -> str:
+async def cloudinary_upload(url: str) -> Dict[str, str]:
     logging.info(f"Uploading URL to Cloudinary: {url}")
     last_exc = None
     for attempt in range(1, 4):
         try:
             logging.info(f"Upload attempt {attempt} for URL: {url}")
             res = cld_upload(
-                url,
-                upload_preset=CLOUD_PRESET,
-                unsigned=True
+                url
             )
             logging.info(f"Uploaded to Cloudinary: {res['secure_url']}")
-            return res["secure_url"]
+            return {"secure_url": res["secure_url"], "public_id": res["public_id"]}
         except Exception as e:
             logging.warning(f"Upload attempt {attempt} failed: {e}")
             last_exc = e
@@ -156,7 +154,7 @@ async def generate_painting(photo_url: str) -> str:
                         {"type": "image_url", "image_url": {"url": photo_url}},
                         {"type": "image_url", "image_url": {"url": "https://i.postimg.cc/ZYGSGGdd/image.png"}},
                         {"type": "text", "text": (
-                            "Attached is a photo of a place and a style reference - a painting by David Bomberg. Paint the place like David Bomberg would. Simplify the composition focussing on simplified, flattened versions of the main shapes , avoid all clutter. Take influence from the colors in the photo as well as the colors in the attached style reference. Ignore clouds - paint the sky as a flat blue or grey. Output a 1024×1536 or 1536x 1024 image "
+                            "Attached is a photo of {location_name} and a style reference - a painting by David Bomberg. Paint the place like David Bomberg would. Simplify the composition focussing on simplified, flattened versions of the main shapes , avoid all clutter. Take influence from the colors in the photo as well as the colors in the attached style reference. Ignore clouds - paint the sky as a flat blue or grey. Output a 1024×1536 or 1536x 1024 image. Do not output any other resolution. "
                         )},
                     ],
                 }
@@ -253,12 +251,14 @@ async def pipeline(photo: PhotoRow) -> None:
     logging.info(f"Starting pipeline for PhotoRow ID={photo.Id}")
     try:
         await mark_photo_not_ready(photo.Id)
-        src_url = await cloudinary_upload(photo.url)
+        src = await cloudinary_upload(photo.url)
+        src_url = src["secure_url"]
+        src_public_id = src["public_id"]
         painted_png = await generate_painting(src_url)
         final_cld = await cloudinary_upload(painted_png)
         meta = await analyse_painting(painted_png, photo.description or "", photo.description or "Berlin")
         art_uuid = str(uuid.uuid4())
-        artwork_id = await create_artwork_record(meta, final_cld, art_uuid, photo.Id)
+        artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo.Id)
         # Determine Catchment ID (object or _id)
         catch_id = None
         if hasattr(photo, "Catchments_id"):
@@ -284,6 +284,9 @@ async def pipeline(photo: PhotoRow) -> None:
         # Link back to the original Photo record
         logging.info(f"Linking artwork {artwork_id} to Photo ID {photo.Id}")
         await link_artwork(NOCODB_PHOTO_LINK, photo.Id, artwork_id)
+
+        logging.info(f"Deleting source image from Cloudinary: {src_public_id}")
+        cld_destroy(src_public_id)
     except Exception as ex:
         logging.error(f"Error in pipeline for photo {photo.Id}: {ex}", exc_info=True)
         for attempt in range(2):
