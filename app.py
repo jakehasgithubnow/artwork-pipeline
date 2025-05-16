@@ -20,6 +20,11 @@ load_dotenv(dotenv_path=".env")
 import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+# Concurrency and rate limiting
+_piapi_semaphore = asyncio.Semaphore(4)
+_nocodb_lock = asyncio.Lock()
+_nocodb_last_call: float = 0.0
+
 # ---------------------------------------------------------------------------
 # Config & constants ------------------------------------------------------
 # ---------------------------------------------------------------------------
@@ -90,6 +95,16 @@ class WebhookPayload(BaseModel):
 # ---------------------------------------------------------------------------
 
 async def httpx_json(method: str, url: str, **kwargs) -> httpx.Response:
+    # Throttle NocoDB to max 1 request/sec
+    if url.startswith(NOCODB_BASE_URL):
+        global _nocodb_last_call
+        async with _nocodb_lock:
+            now = asyncio.get_event_loop().time()
+            wait = 1.0 - (now - _nocodb_last_call)
+            if wait > 0:
+                logging.info(f"Throttling NocoDB call for {wait:.2f}s")
+                await asyncio.sleep(wait)
+            _nocodb_last_call = asyncio.get_event_loop().time()
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
         response = await client.request(method, url, **kwargs)
         response.raise_for_status()
@@ -129,40 +144,42 @@ async def cloudinary_upload(url: str) -> str:
     raise last_exc
 
 async def generate_painting(photo_url: str) -> str:
-    logging.info(f"Generating painting for photo URL: {photo_url}")
-    payload = {
-        "model": "gpt-4o-image",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": photo_url}},
-                    {"type": "image_url", "image_url": {"url": "https://i.postimg.cc/ZYGSGGdd/image.png"}},
-                    {"type": "text", "text": (
-                        "Paint this place in the style of David Bomberg. "
-                        "Simplify the composition, flatten shapes, avoid clutter. "
-                        "Use colours from the photo and the reference. "
-                        "Ignore clouds; paint sky flat blue or grey. "
-                        "Output a 1024×1536 or 1536×1024 image."
-                    )},
-                ],
-            }
-        ],
-        "stream": True,
-    }
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream("POST", "https://api.piapi.ai/v1/chat/completions",
-                                 headers=HEADERS_PIAPI, json=payload) as r:
-            r.raise_for_status()
-            full_text = ""
-            async for chunk in r.aiter_text():
-                full_text += chunk
-    logging.info(f"Received streamed response from PiAPI, concatenated length: {len(full_text)}")
-    m = REGEX_STORAGE_URL.search(full_text)
-    if not m:
-        raise RuntimeError("No PNG URL in PiAPI response")
-    logging.info(f"PiAPI returned painting URL: {m.group(0)}")
-    return m.group(0)
+    async with _piapi_semaphore:
+        logging.info("Acquired PiAPI semaphore for image generation")
+        logging.info(f"Generating painting for photo URL: {photo_url}")
+        payload = {
+            "model": "gpt-4o-image",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": photo_url}},
+                        {"type": "image_url", "image_url": {"url": "https://i.postimg.cc/ZYGSGGdd/image.png"}},
+                        {"type": "text", "text": (
+                            "Paint this place in the style of David Bomberg. "
+                            "Simplify the composition, flatten shapes, avoid clutter. "
+                            "Use colours from the photo and the reference. "
+                            "Ignore clouds; paint sky flat blue or grey. "
+                            "Output a 1024×1536 or 1536×1024 image."
+                        )},
+                    ],
+                }
+            ],
+            "stream": True,
+        }
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", "https://api.piapi.ai/v1/chat/completions",
+                                     headers=HEADERS_PIAPI, json=payload) as r:
+                r.raise_for_status()
+                full_text = ""
+                async for chunk in r.aiter_text():
+                    full_text += chunk
+        logging.info(f"Received streamed response from PiAPI, concatenated length: {len(full_text)}")
+        m = REGEX_STORAGE_URL.search(full_text)
+        if not m:
+            raise RuntimeError("No PNG URL in PiAPI response")
+        logging.info(f"PiAPI returned painting URL: {m.group(0)}")
+        return m.group(0)
 
 async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[str, Any]:
     logging.info(f"Analysing painting at {png_url}")
