@@ -110,13 +110,23 @@ async def mark_photo_not_ready(photo_id: int) -> None:
 
 async def cloudinary_upload(url: str) -> str:
     logging.info(f"Uploading URL to Cloudinary: {url}")
-    res = cld_upload(
-        url,
-        upload_preset=CLOUD_PRESET,
-        unsigned=True
-    )
-    logging.info(f"Uploaded to Cloudinary: {res['secure_url']}")
-    return res["secure_url"]
+    last_exc = None
+    for attempt in range(1, 4):
+        try:
+            logging.info(f"Upload attempt {attempt} for URL: {url}")
+            res = cld_upload(
+                url,
+                upload_preset=CLOUD_PRESET,
+                unsigned=True
+            )
+            logging.info(f"Uploaded to Cloudinary: {res['secure_url']}")
+            return res["secure_url"]
+        except Exception as e:
+            logging.warning(f"Upload attempt {attempt} failed: {e}")
+            last_exc = e
+            await asyncio.sleep(1)
+    logging.error(f"Failed to upload URL after 3 attempts: {url}")
+    raise last_exc
 
 async def generate_painting(photo_url: str) -> str:
     logging.info(f"Generating painting for photo URL: {photo_url}")
