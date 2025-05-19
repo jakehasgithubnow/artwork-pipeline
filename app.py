@@ -206,17 +206,19 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
         "}"
     )
     completion = await client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4.1",
         messages=[
             {
                 "role": "user",
-                "content": prompt,
-                "image_url": png_url
+                "content": [
+                    {"type": "text",      "text": prompt},
+                    {"type": "image_url", "image_url": {"url": png_url}}
+                ]
             }
         ],
         temperature=1,
         top_p=1,
-        response_format={"type":"json_object"},
+        response_format={"type": "json_object"},
     )
     logging.info(f"Analysis result: {completion.choices[0].message.content}")
     return json.loads(completion.choices[0].message.content)
