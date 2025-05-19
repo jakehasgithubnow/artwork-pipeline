@@ -181,28 +181,28 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     prompt = (
-        "Does this image look like a handmade painting? respond ‘true’ or ‘false’\n\n"
-        "Is the composition attractive? respond ‘true’ or ‘false’\n\n"
-        "Does it look like an oil/acrylic painting on canvas, a watercolour painting on paper, or other? "
-        "respond ‘oil/acrylic’ or ‘watercolour’ or ‘other’\n\n"
-        "Is the format landscape (horizontal) or portrait (vertical)? respond ‘horizontal’ or ‘vertical’\n\n"
-        "What is the main colour? respond with a single color\n\n"
-        "What are the secondary colours? respond with a comma separated list of colours\n\n"
-        f"Write a short description of the piece. The scene is {desc}.  "
-        "Your description should feel contemporary and compelling. "
-        f"It must be written in the language spoken in {location_name}.\n\n"
-        "Write a simple title for the piece, highlighting the location. "
-        f"It must be written in the language spoken in {location_name}.\n\n"
-        "Respond in json format exactly like this:\n"
+        "Does this image look like a handmade painting? Respond ‘true’ or ‘false’.\n\n"
+        "Is the composition attractive? Respond ‘true’ or ‘false’.\n\n"
+        "Does it look like an oil or acrylic painting on canvas, a watercolor painting on paper, or other? "
+        "Respond ‘oil/acrylic’, ‘watercolour’, or ‘other’.\n\n"
+        "Is the format landscape (horizontal) or portrait (vertical)? Respond ‘horizontal’ or ‘vertical’.\n\n"
+        "What is the main colour? Respond with a single colour.\n\n"
+        "What are the secondary colours? Respond with a comma-separated list of colours.\n\n"
+        "Now, imagine you’re a late-twenties literary lifestyle blogger—cool, softly poetic, never pretentious. "
+        "Write a short description of the piece, as if introducing it in a chic urban gallery. "
+        "The scene is {desc}. Keep it inviting and artfully unforced, in the language spoken in {location_name}.\n\n"
+        "Next, craft a simple, evocative title that highlights the location—think of a catchy travel-meets-art headline. "
+        "Keep it genuine, lightly poetic, again in the language spoken in {location_name}.\n\n"
+        "Respond in JSON exactly like this:\n"
         "{\n"
-        '  "handmade_painting": true,\n'
-        '  "attractive_composition": true,\n'
-        '  "painting_style": "other",\n'
-        '  "format": "horizontal",\n'
-        '  "main_colour": "pink",\n'
-        '  "secondary_colours": "blue,yellow",\n'
-        '  "description": "…",\n'
-        '  "title": "Sunset over Berlin"\n'
+        "  \"handmade_painting\": true,\n"
+        "  \"attractive_composition\": true,\n"
+        "  \"painting_style\": \"other\",\n"
+        "  \"format\": \"horizontal\",\n"
+        "  \"main_colour\": \"pink\",\n"
+        "  \"secondary_colours\": \"blue,yellow\",\n"
+        "  \"description\": \"…\",\n"
+        "  \"title\": \"Sunset over Berlin\"\n"
         "}"
     )
     completion = await client.chat.completions.create(
