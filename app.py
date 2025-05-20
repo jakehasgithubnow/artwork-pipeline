@@ -254,6 +254,134 @@ async def link_artwork(link_path: str, foreign_id: int, artwork_id: int) -> None
     await httpx_json("POST", url, headers=HEADERS_NOCODB, json=[artwork_id])
 
 # ---------------------------------------------------------------------------
+# Style Processing Functions ----------------------------------------------
+# ---------------------------------------------------------------------------
+
+async def get_ready_styles() -> List[Dict[str, Any]]:
+    """Queries the styles table for rows where 'Ready' is 'yes'."""
+    logging.info("Querying styles table for ready styles")
+    url = f"{NOCODB_BASE_URL}/api/v2/tables/m0dkdlksig5q346/records"
+    params = {
+        "where": "(Ready,eq,yes)",
+        "limit": 0 # Get all records
+    }
+    try:
+        response = await httpx_json("GET", url, headers=HEADERS_NOCODB, params=params)
+        data = response.json()
+        logging.info(f"Found {data.get('totalRows', 0)} ready styles")
+        return data.get("list", [])
+    except httpx.HTTPStatusError as exc:
+        logging.error(f"Error querying styles table: {exc}", exc_info=True)
+        return []
+
+async def generate_painting_with_style(base_photo_url: str, style_prompt: str, style_image_url: str) -> str:
+    """Generates a painting using a base photo, a text prompt, and a style image."""
+    async with _piapi_semaphore:
+        logging.info("Acquired PiAPI semaphore for style image generation")
+        logging.info(f"Generating painting for base photo URL: {base_photo_url} with style prompt: {style_prompt} and style image: {style_image_url}")
+        payload = {
+            "model": "gpt-4o-image",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": base_photo_url}},
+                        {"type": "image_url", "image_url": {"url": style_image_url}},
+                        {"type": "text", "text": style_prompt},
+                    ],
+                }
+            ],
+            "stream": True,
+        }
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream("POST", "https://api.piapi.ai/v1/chat/completions",
+                                     headers=HEADERS_PIAPI, json=payload) as r:
+                r.raise_for_status()
+                full_text = ""
+                async for chunk in r.aiter_text():
+                    full_text += chunk
+        logging.info(f"Received streamed response from PiAPI, concatenated length: {len(full_text)}")
+        m = REGEX_STORAGE_URL.search(full_text)
+        if not m:
+            raise RuntimeError("No PNG URL in PiAPI response")
+        logging.info(f"PiAPI returned painting URL: {m.group(0)}")
+        return m.group(0)
+
+async def link_artwork_to_style(style_id: int, artwork_id: int) -> None:
+    """Links an artwork record to a style row in the styles table."""
+    logging.info(f"Linking artwork {artwork_id} to style row {style_id}")
+    url = f"{NOCODB_BASE_URL}/api/v2/tables/m0dkdlksig5q346/records/{style_id}"
+    body = {"c59fxfe0umpmin7": [artwork_id]} # Use the field ID for 'artwork'
+    try:
+        await httpx_json("PATCH", url, headers=HEADERS_NOCODB, json=body)
+        logging.info(f"Artwork {artwork_id} linked to style row {style_id}")
+    except httpx.HTTPStatusError as exc:
+        logging.error(f"Error linking artwork {artwork_id} to style row {style_id}: {exc}", exc_info=True)
+
+async def mark_style_not_ready(style_id: int) -> None:
+    """Marks a style row in the styles table as not ready."""
+    logging.info(f"Marking style row {style_id} as not ready")
+    url = f"{NOCODB_BASE_URL}/api/v2/tables/m0dkdlksig5q346/records/{style_id}"
+    body = {"Ready": "no"} # Assuming 'Ready' is the correct field name
+    try:
+        await httpx_json("PATCH", url, headers=HEADERS_NOCODB, json=body)
+        logging.info(f"Style row {style_id} marked as not ready")
+    except httpx.HTTPStatusError as exc:
+        logging.error(f"Error marking style row {style_id} as not ready: {exc}", exc_info=True)
+
+async def process_styles_for_photo(photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int]) -> None:
+    """Processes ready styles from the styles table for a given photo."""
+    logging.info(f"Starting style processing for photo {photo_id}")
+    ready_styles = await get_ready_styles()
+
+    for style_row in ready_styles:
+        try:
+            style_id = style_row.get("Id")
+            style_prompt = style_row.get("Prompt")
+            style_image_url = style_row.get("image") # Assuming 'image' is the column name
+
+            if not style_id or not style_prompt or not style_image_url:
+                logging.warning(f"Skipping style row with missing data: {style_row}")
+                continue
+
+            logging.info(f"Processing style {style_id} for photo {photo_id}")
+
+            # Generate painting using photo_url, style_prompt, and style_image_url
+            painted_png = await generate_painting_with_style(photo_url, style_prompt, style_image_url)
+
+            # Integrate with existing pipeline steps
+            # Note: We are not uploading the *source* photo to Cloudinary here,
+            # only the *generated* painting. The original photo is assumed to be
+            # accessible via URL for the generation step.
+            final_cld = await cloudinary_upload(painted_png, preset=CLOUD_PRESET)
+            if final_cld is None:
+                logging.error(f"Cloudinary upload of style painting failed for style {style_id}; skipping.")
+                continue
+
+            # Analyse painting - use style title for location_name and a generic description
+            style_title = style_row.get("Title", "Artwork")
+            meta = await analyse_painting(final_cld["secure_url"], f"Artwork in {style_title} style", style_title)
+
+            # Create artwork record, linking to the original photo details from the webhook
+            art_uuid = str(uuid.uuid4())
+            artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id)
+
+            # Link artwork to the style row
+            await link_artwork_to_style(style_id, artwork_id)
+
+            # Update 'Ready' status to 'no'
+            await mark_style_not_ready(style_id)
+
+            logging.info(f"Successfully processed style {style_id} for photo {photo_id}")
+
+        except Exception as ex:
+            logging.error(f"Error processing style row {style_row.get('Id')}: {ex}", exc_info=True)
+            # Continue to the next style row even if one fails
+
+    logging.info(f"Finished style processing for photo {photo_id}")
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline ------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
