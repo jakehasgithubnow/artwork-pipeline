@@ -461,9 +461,10 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
 
     # Trigger original pipeline only on transition false→true
     if curr_ready and not prev_ready:
-        logging.info(f"Triggering original pipeline for photo {photo_id} due to false→true transition")
-        # The original pipeline function expects a PhotoRow object
-        background_tasks.add_task(pipeline, photo_row_obj)
+        # logging.info(f"Triggering original pipeline for photo {photo_id} due to false→true transition")
+        # # The original pipeline function expects a PhotoRow object
+        # background_tasks.add_task(pipeline, photo_row_obj)
+        pass # Old pipeline commented out
     else:
          logging.info(f"Skip original pipeline for photo {photo_id} – ready_to_paint transition not false→true")
 
