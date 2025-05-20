@@ -307,20 +307,6 @@ async def generate_painting_with_style(base_photo_url: str, style_prompt: str, s
         logging.info(f"PiAPI returned painting URL: {m.group(0)}")
         return m.group(0)
 
-async def link_artwork_to_style(style_id: int, artwork_id: int) -> None:
-    """Links an artwork record to a style row in the styles table."""
-    logging.info(f"Linking artwork {artwork_id} to style row {style_id}")
-    url = f"{NOCODB_BASE_URL}/api/v2/tables/m0dkdlksig5q346/records/{style_id}"
-    body = {"c59fxfe0umpmin7": [artwork_id]} # Use the field ID for 'artwork'
-    try:
-        await httpx_json("PATCH", url, headers=HEADERS_NOCODB, json=body)
-        logging.info(f"Artwork {artwork_id} linked to style row {style_id}")
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            logging.warning(f"Style row {style_id} not found in NocoDB (404) during linking; skipping.")
-        else:
-            logging.error(f"Error linking artwork {artwork_id} to style row {style_id}: {exc}", exc_info=True)
-
 async def mark_style_not_ready(style_id: int) -> None:
     """Marks a style row in the styles table as not ready."""
     logging.info(f"Marking style row {style_id} as not ready")
@@ -372,8 +358,8 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             art_uuid = str(uuid.uuid4())
             artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id)
 
-            # Link artwork to the style row
-            await link_artwork_to_style(style_id, artwork_id)
+            # Link artwork to the style row using the generic link_artwork function
+            await link_artwork("m0dkdlksig5q346", style_id, artwork_id)
 
             # Update 'Ready' status to 'no'
             await mark_style_not_ready(style_id)
