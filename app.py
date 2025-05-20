@@ -295,14 +295,7 @@ async def pipeline(photo: PhotoRow) -> None:
         cld_destroy(src_public_id)
     except Exception as ex:
         logging.error(f"Error in pipeline for photo {photo.Id}: {ex}", exc_info=True)
-        for attempt in range(2):
-            await asyncio.sleep(3)
-            try:
-                await pipeline(photo)
-                return
-            except Exception:
-                logging.warning(f"Retrying pipeline for photo {photo.Id}, attempt {attempt+1}")
-        raise
+        # No retry logic here, the exception is effectively handled by logging
 
 # ---------------------------------------------------------------------------
 # Webhook endpoint ---------------------------------------------------------
