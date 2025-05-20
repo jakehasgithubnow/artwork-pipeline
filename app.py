@@ -360,6 +360,9 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             art_uuid = str(uuid.uuid4())
             artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id)
 
+            # Add a small delay to allow NocoDB to process the new record
+            await asyncio.sleep(1)
+
             # Link artwork to the style row by updating the artwork record
             artwork_update_url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_ARTWORKS_TABLE}/records/{artwork_id}"
             artwork_update_body = {"chlvfjf8ovskco2": [style_id]} # Use the field ID for the 'style' link in the artwork table
