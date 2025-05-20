@@ -329,7 +329,7 @@ async def mark_style_not_ready(style_id: int) -> None:
     except httpx.HTTPStatusError as exc:
         logging.error(f"Error marking style row {style_id} as not ready: {exc}", exc_info=True)
 
-async def process_styles_for_photo(photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int]) -> None:
+async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int]) -> None:
     """Processes ready styles from the styles table for a given photo."""
     logging.info(f"Starting style processing for photo {photo_id}")
     ready_styles = await get_ready_styles()
@@ -346,8 +346,8 @@ async def process_styles_for_photo(photo_url: str, photo_id: int, catch_id: Opti
 
             logging.info(f"Processing style {style_id} for photo {photo_id}")
 
-            # Generate painting using photo_url, style_prompt, and style_image_url
-            painted_png = await generate_painting_with_style(photo_url, style_prompt, style_image_url)
+            # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url
+            painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, style_image_url)
 
             # Integrate with existing pipeline steps
             # Note: We are not uploading the *source* photo to Cloudinary here,
@@ -479,8 +479,14 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     # Always trigger style processing, regardless of the incoming photo's ready status transition
     # Pass the photo details from the webhook to the style processing task
     if photo_id and photo_url:
-         logging.info(f"Adding style processing task for photo {photo_id}")
-         background_tasks.add_task(process_styles_for_photo, photo_url, photo_id, catch_id, loc_id)
+        logging.info(f"Uploading source photo {photo_id} to Cloudinary for style processing")
+        src_cld = await cloudinary_upload(photo_url, preset="basic_upload") # Use basic_upload preset
+        if src_cld is None:
+            logging.error(f"Cloudinary upload failed for source photo {photo_id} for style processing; skipping.")
+        else:
+            cloudinary_photo_url = src_cld["secure_url"]
+            logging.info(f"Adding style processing task for photo {photo_id} with Cloudinary URL: {cloudinary_photo_url}")
+            background_tasks.add_task(process_styles_for_photo, cloudinary_photo_url, photo_id, catch_id, loc_id) # Pass Cloudinary URL
     else:
          logging.warning("Skipping style processing task due to missing photo ID or URL in webhook payload")
 
