@@ -316,7 +316,10 @@ async def link_artwork_to_style(style_id: int, artwork_id: int) -> None:
         await httpx_json("PATCH", url, headers=HEADERS_NOCODB, json=body)
         logging.info(f"Artwork {artwork_id} linked to style row {style_id}")
     except httpx.HTTPStatusError as exc:
-        logging.error(f"Error linking artwork {artwork_id} to style row {style_id}: {exc}", exc_info=True)
+        if exc.response.status_code == 404:
+            logging.warning(f"Style row {style_id} not found in NocoDB (404) during linking; skipping.")
+        else:
+            logging.error(f"Error linking artwork {artwork_id} to style row {style_id}: {exc}", exc_info=True)
 
 async def mark_style_not_ready(style_id: int) -> None:
     """Marks a style row in the styles table as not ready."""
@@ -327,7 +330,10 @@ async def mark_style_not_ready(style_id: int) -> None:
         await httpx_json("PATCH", url, headers=HEADERS_NOCODB, json=body)
         logging.info(f"Style row {style_id} marked as not ready")
     except httpx.HTTPStatusError as exc:
-        logging.error(f"Error marking style row {style_id} as not ready: {exc}", exc_info=True)
+        if exc.response.status_code == 404:
+            logging.warning(f"Style row {style_id} not found in NocoDB (404) during marking as not ready; skipping.")
+        else:
+            logging.error(f"Error marking style row {style_id} as not ready: {exc}", exc_info=True)
 
 async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int]) -> None:
     """Processes ready styles from the styles table for a given photo."""
