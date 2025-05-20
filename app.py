@@ -257,6 +257,8 @@ async def link_artwork(link_path: str, foreign_id: int, artwork_id: int) -> None
 # Style Processing Functions ----------------------------------------------
 # ---------------------------------------------------------------------------
 
+# Removed unused link_artwork function
+
 async def get_ready_styles() -> List[Dict[str, Any]]:
     """Queries the styles table for rows where 'Ready' is 'yes'."""
     logging.info("Querying styles table for ready styles")
@@ -358,8 +360,12 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             art_uuid = str(uuid.uuid4())
             artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id)
 
-            # Link artwork to the style row using the generic link_artwork function
-            await link_artwork("m0dkdlksig5q346", style_id, artwork_id)
+            # Link artwork to the style row by updating the artwork record
+            artwork_update_url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_ARTWORKS_TABLE}/records/{artwork_id}"
+            artwork_update_body = {"chlvfjf8ovskco2": [style_id]} # Use the field ID for the 'style' link in the artwork table
+            logging.info(f"Patching artwork record {artwork_id} to link style {style_id}")
+            await httpx_json("PATCH", artwork_update_url, headers=HEADERS_NOCODB, json=artwork_update_body)
+            logging.info(f"Artwork {artwork_id} linked to style {style_id}")
 
             # Update 'Ready' status to 'no'
             await mark_style_not_ready(style_id)
