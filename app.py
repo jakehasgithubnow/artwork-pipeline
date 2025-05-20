@@ -315,11 +315,46 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     if prev_rows:
         prev_ready = str(prev_rows[0].get("ready to paint")).lower() == "true"
 
-    # Trigger only on transition false→true
-    if not curr_ready or prev_ready:
-        logging.info(f"Skip photo {row.get('Id')} – ready_to_paint transition not false→true")
-        return {"status": "skipped"}
+    # Determine Catchment ID (object or _id) and Location ID (object or _id) from the webhook payload
+    # Need to parse the row to access attributes like Catchments_id or Catchments
+    try:
+        photo_row_obj = PhotoRow.parse_obj(row)
+        catch_id = None
+        if hasattr(photo_row_obj, "Catchments_id"):
+            catch_id = getattr(photo_row_obj, "Catchments_id")
+        elif hasattr(photo_row_obj, "Catchments") and isinstance(photo_row_obj.Catchments, dict):
+            catch_id = photo_row_obj.Catchments.get("Id") or photo_row_obj.Catchments.get("id")
 
-    photo = PhotoRow.parse_obj(row)
-    background_tasks.add_task(pipeline, photo)
-    return {"status": "queued"}
+        loc_id = None
+        if hasattr(photo_row_obj, "locations_id"):
+            loc_id = getattr(photo_row_obj, "locations_id")
+        elif hasattr(photo_row_obj, "locations") and isinstance(photo_row_obj.locations, dict):
+            loc_id = photo_row_obj.locations.get("Id") or photo_row_obj.locations.get("id")
+
+        photo_id = photo_row_obj.Id
+        photo_url = photo_row_obj.url
+
+    except Exception as e:
+        logging.error(f"Error parsing webhook payload or extracting photo details: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail="Invalid webhook payload structure")
+
+
+    # Trigger original pipeline only on transition false→true
+    if curr_ready and not prev_ready:
+        logging.info(f"Triggering original pipeline for photo {photo_id} due to false→true transition")
+        # The original pipeline function expects a PhotoRow object
+        background_tasks.add_task(pipeline, photo_row_obj)
+    else:
+         logging.info(f"Skip original pipeline for photo {photo_id} – ready_to_paint transition not false→true")
+
+
+    # Always trigger style processing, regardless of the incoming photo's ready status transition
+    # Pass the photo details from the webhook to the style processing task
+    if photo_id and photo_url:
+         logging.info(f"Adding style processing task for photo {photo_id}")
+         background_tasks.add_task(process_styles_for_photo, photo_url, photo_id, catch_id, loc_id)
+    else:
+         logging.warning("Skipping style processing task due to missing photo ID or URL in webhook payload")
+
+
+    return {"status": "queued"} # Status is queued as tasks are added to background
