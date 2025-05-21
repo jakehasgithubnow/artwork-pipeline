@@ -33,6 +33,7 @@ NOCODB_BASE_URL      = os.getenv("NOCODB_BASE_URL", "").rstrip("/")
 NOCODB_API_TOKEN     = os.getenv("NOCODB_API_TOKEN")
 NOCODB_PHOTO_TABLE   = os.getenv("NOCODB_PHOTO_TABLE")
 NOCODB_ARTWORKS_TABLE = os.getenv("NOCODB_ARTWORKS_TABLE")
+NOCODB_STYLES_TABLE  = os.getenv("NOCODB_STYLES_TABLE") # Added for styles table ID
 NOCODB_CATCHMENTS_LINK = os.getenv("NOCODB_CATCHMENTS_LINK")
 NOCODB_LOCATIONS_LINK  = os.getenv("NOCODB_LOCATIONS_LINK")
 NOCODB_PHOTO_LINK      = os.getenv("NOCODB_PHOTO_LINK")
@@ -258,7 +259,10 @@ async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: 
 async def get_ready_styles() -> List[Dict[str, Any]]:
     """Queries the styles table for rows where 'Ready' is 'yes'."""
     logging.info("Querying styles table for ready styles")
-    url = f"{NOCODB_BASE_URL}/api/v2/tables/m0dkdlksig5q346/records"
+    if not NOCODB_STYLES_TABLE:
+        logging.error("NOCODB_STYLES_TABLE environment variable is not set.")
+        return []
+    url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_STYLES_TABLE}/records"
     params = {
         "where": "(Ready,eq,yes)",
         "limit": 0 # Get all records
@@ -315,8 +319,12 @@ async def generate_painting_with_style(base_photo_url: str, style_prompt: str, s
 async def mark_style_not_ready(style_id: int) -> None:
     """Marks a style row in the styles table as not ready."""
     logging.info(f"Marking style row {style_id} as not ready")
-    url = f"{NOCODB_BASE_URL}/api/v2/tables/m0dkdlksig5q346/records/{style_id}"
-    body = {"Ready": "no"} # Assuming 'Ready' is the correct field name
+    if not NOCODB_STYLES_TABLE:
+        logging.error("NOCODB_STYLES_TABLE environment variable is not set. Cannot mark style as not ready.")
+        # Optionally, raise an error or handle appropriately
+        raise ValueError("NOCODB_STYLES_TABLE is not set, cannot proceed with marking style not ready.")
+    url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_STYLES_TABLE}/records" # Corrected endpoint
+    body = [{"Id": style_id, "Ready": "no"}] # Corrected request body format
     max_retries = 5
     for attempt in range(1, max_retries + 1):
         try:
