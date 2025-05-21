@@ -223,7 +223,7 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
     logging.info(f"Analysis result: {completion.choices[0].message.content}")
     return json.loads(completion.choices[0].message.content)
 
-async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: str, photo_id: int, catch_id: int, loc_id: int) -> int:
+async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int], style_id: Optional[int] = None) -> int:
     logging.info(f"Creating artwork record for photo {photo_id} with UUID {uuid_str}")
 
     # Compute web-optimized version by injecting the transformation after "/upload/"
@@ -240,24 +240,20 @@ async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: 
         "painting style": meta["painting_style"],
         "format": meta["format"],
         "locations photos": [photo_id],
-        "Catchment":          [catch_id],
-        "location":           [loc_id],
+        "Catchment":          [catch_id] if catch_id is not None else [],
+        "location":           [loc_id] if loc_id is not None else [],
     }
+    if style_id is not None:
+        body["chlvfjf8ovskco2"] = [style_id] # Use the field ID for the 'style' link
+
     url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_ARTWORKS_TABLE}/records"
     res = await httpx_json("POST", url, headers=HEADERS_NOCODB, json=body)
     logging.info(f"Created artwork record with ID: {res.json()['Id']}")
     return res.json()["Id"]
 
-async def link_artwork(link_path: str, foreign_id: int, artwork_id: int) -> None:
-    logging.info(f"Linking artwork {artwork_id} to record {foreign_id} via {link_path}")
-    url = f"{NOCODB_BASE_URL}/api/v2/tables/{link_path}/records/{foreign_id}"
-    await httpx_json("POST", url, headers=HEADERS_NOCODB, json=[artwork_id])
-
 # ---------------------------------------------------------------------------
 # Style Processing Functions ----------------------------------------------
 # ---------------------------------------------------------------------------
-
-# Removed unused link_artwork function
 
 async def get_ready_styles() -> List[Dict[str, Any]]:
     """Queries the styles table for rows where 'Ready' is 'yes'."""
@@ -276,21 +272,28 @@ async def get_ready_styles() -> List[Dict[str, Any]]:
         logging.error(f"Error querying styles table: {exc}", exc_info=True)
         return []
 
-async def generate_painting_with_style(base_photo_url: str, style_prompt: str, style_image_url: str) -> str:
-    """Generates a painting using a base photo, a text prompt, and a style image."""
+async def generate_painting_with_style(base_photo_url: str, style_prompt: str, style_image_url: Optional[str] = None) -> str:
+    """Generates a painting using a base photo, a text prompt, and an optional style image."""
     async with _piapi_semaphore:
         logging.info("Acquired PiAPI semaphore for style image generation")
-        logging.info(f"Generating painting for base photo URL: {base_photo_url} with style prompt: {style_prompt} and style image: {style_image_url}")
+        log_message = f"Generating painting for base photo URL: {base_photo_url} with style prompt: {style_prompt}"
+        if style_image_url:
+            log_message += f" and style image: {style_image_url}"
+        logging.info(log_message)
+
+        content_blocks: List[Dict[str, Any]] = [
+            {"type": "image_url", "image_url": {"url": base_photo_url}},
+        ]
+        if style_image_url:
+            content_blocks.append({"type": "image_url", "image_url": {"url": style_image_url}})
+        content_blocks.append({"type": "text", "text": style_prompt})
+
         payload = {
             "model": "gpt-4o-image",
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": base_photo_url}},
-                        {"type": "image_url", "image_url": {"url": style_image_url}},
-                        {"type": "text", "text": style_prompt},
-                    ],
+                    "content": content_blocks,
                 }
             ],
             "stream": True,
@@ -334,13 +337,13 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             style_prompt = style_row.get("Prompt")
             style_image_url = style_row.get("image") # Assuming 'image' is the column name
 
-            if not style_id or not style_prompt or not style_image_url:
-                logging.warning(f"Skipping style row with missing data: {style_row}")
+            if not style_id or not style_prompt:
+                logging.warning(f"Skipping style row with missing ID or Prompt: {style_row}")
                 continue
 
             logging.info(f"Processing style {style_id} for photo {photo_id}")
 
-            # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url
+            # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url (if available)
             painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, style_image_url)
 
             # Integrate with existing pipeline steps
@@ -356,19 +359,9 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             style_title = style_row.get("Title", "Artwork")
             meta = await analyse_painting(final_cld["secure_url"], f"Artwork in {style_title} style", style_title)
 
-            # Create artwork record, linking to the original photo details from the webhook
+            # Create artwork record, linking to the original photo details from the webhook and the style
             art_uuid = str(uuid.uuid4())
-            artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id)
-
-            # Add a small delay to allow NocoDB to process the new record
-            await asyncio.sleep(1)
-
-            # Link artwork to the style row by updating the artwork record
-            artwork_update_url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_ARTWORKS_TABLE}/records/{artwork_id}"
-            artwork_update_body = {"chlvfjf8ovskco2": [style_id]} # Use the field ID for the 'style' link in the artwork table
-            logging.info(f"Patching artwork record {artwork_id} to link style {style_id}")
-            await httpx_json("PATCH", artwork_update_url, headers=HEADERS_NOCODB, json=artwork_update_body)
-            logging.info(f"Artwork {artwork_id} linked to style {style_id}")
+            artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id, style_id)
 
             # Update 'Ready' status to 'no'
             await mark_style_not_ready(style_id)
