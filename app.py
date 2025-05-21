@@ -317,14 +317,26 @@ async def mark_style_not_ready(style_id: int) -> None:
     logging.info(f"Marking style row {style_id} as not ready")
     url = f"{NOCODB_BASE_URL}/api/v2/tables/m0dkdlksig5q346/records/{style_id}"
     body = {"Ready": "no"} # Assuming 'Ready' is the correct field name
-    try:
-        await httpx_json("PATCH", url, headers=HEADERS_NOCODB, json=body)
-        logging.info(f"Style row {style_id} marked as not ready")
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            logging.warning(f"Style row {style_id} not found in NocoDB (404) during marking as not ready; skipping.")
-        else:
-            logging.error(f"Error marking style row {style_id} as not ready: {exc}", exc_info=True)
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            await httpx_json("PATCH", url, headers=HEADERS_NOCODB, json=body)
+            logging.info(f"Style row {style_id} marked as not ready on attempt {attempt}")
+            break # Success, exit retry loop
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404 and attempt < max_retries:
+                logging.warning(f"Attempt {attempt} failed to mark style {style_id} as not ready (404 Not Found). Retrying in {attempt} second(s)...")
+                await asyncio.sleep(attempt) # Exponential backoff (simple)
+            else:
+                logging.error(f"Failed to mark style row {style_id} as not ready after {attempt} attempts: {exc}", exc_info=True)
+                raise # Re-raise the exception if it's not a 404 or max retries reached
+        except Exception as e:
+            logging.error(f"An unexpected error occurred on attempt {attempt} while marking style {style_id} as not ready: {e}", exc_info=True)
+            if attempt < max_retries:
+                logging.warning(f"Retrying in {attempt} second(s)...")
+                await asyncio.sleep(attempt)
+            else:
+                raise # Re-raise the exception after max retries
 
 async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int]) -> None:
     """Processes ready styles from the styles table for a given photo."""
@@ -362,6 +374,9 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             # Create artwork record, linking to the original photo details from the webhook and the style
             art_uuid = str(uuid.uuid4())
             artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id, style_id)
+
+            # Add a small delay to allow NocoDB to process the artwork linking
+            await asyncio.sleep(2)
 
             # Update 'Ready' status to 'no'
             await mark_style_not_ready(style_id)
