@@ -394,9 +394,6 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             # Add a small delay to allow NocoDB to process the artwork linking
             await asyncio.sleep(2)
 
-            # Update 'Ready' status to 'no'
-            await mark_style_not_ready(style_id)
-
             logging.info(f"Successfully processed style {style_id} for photo {photo_id}")
 
         except Exception as ex:
