@@ -229,6 +229,8 @@ async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: 
 
     # Compute web-optimized version by injecting the transformation after "/upload/"
     webimage_url = cloud_url.replace("/upload/", "/upload/t_web_image/")
+    # Remove file extension
+    webimage_url = webimage_url.rsplit('.', 1)[0]
 
     body = {
         "uuid": uuid_str,
