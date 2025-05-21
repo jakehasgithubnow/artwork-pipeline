@@ -362,6 +362,7 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
                 continue
 
             logging.info(f"Processing style {style_id} for photo {photo_id}")
+            logging.info(f"Using style_id {style_id} for artwork record creation.")
 
             # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url (if available)
             painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, style_image_url)
@@ -381,7 +382,14 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
 
             # Create artwork record, linking to the original photo details from the webhook and the style
             art_uuid = str(uuid.uuid4())
-            artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id, style_id)
+            try:
+                artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id, style_id)
+                logging.info(f"Successfully created artwork record {artwork_id} for style {style_id}, photo {photo_id}")
+            except Exception as create_ex:
+                logging.error(f"Error creating artwork record for style {style_id}, photo {photo_id}: {create_ex}", exc_info=True)
+                # Continue to the next style row if artwork record creation fails
+                continue
+
 
             # Add a small delay to allow NocoDB to process the artwork linking
             await asyncio.sleep(2)
