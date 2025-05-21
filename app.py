@@ -245,7 +245,7 @@ async def create_artwork_record(meta: Dict[str, Any], cloud_url: str, uuid_str: 
         "location":           [loc_id] if loc_id is not None else [],
     }
     if style_id is not None:
-        body["chlvfjf8ovskco2"] = [style_id] # Use the field ID for the 'style' link
+        body["styles"] = [style_id] # Use the field name for the 'style' link
 
     url = f"{NOCODB_BASE_URL}/api/v2/tables/{NOCODB_ARTWORKS_TABLE}/records"
     res = await httpx_json("POST", url, headers=HEADERS_NOCODB, json=body)
