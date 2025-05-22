@@ -5,4 +5,3 @@ httpx
 cloudinary
 openai
 Pillow
-Pillow-AVIF
