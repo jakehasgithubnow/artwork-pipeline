@@ -3,11 +3,14 @@ import re
 import uuid
 import json
 import asyncio
-from typing import Any, Dict, List, Optional
+import io
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
+
+from PIL import Image, ImageSequence
 
 import cloudinary
 from cloudinary.uploader import upload as cld_upload, destroy as cld_destroy
@@ -124,23 +127,71 @@ async def mark_photo_not_ready(photo_id: int) -> None:
         else:
             raise
 
-async def cloudinary_upload(url: str, preset: Optional[str] = None) -> Optional[Dict[str, str]]:
-    logging.info(f"Uploading URL to Cloudinary: {url}")
+async def convert_to_avif(png_url: str) -> Optional[bytes]:
+    """Downloads a PNG image and converts it to AVIF format in memory."""
+    logging.info(f"Converting PNG from URL to AVIF: {png_url}")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(png_url)
+            response.raise_for_status()
+        
+        img_bytes = io.BytesIO(response.content)
+        img = Image.open(img_bytes)
+
+        # Ensure the image is in a mode compatible with AVIF (e.g., RGB or RGBA)
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGBA")
+
+        # Save to AVIF in memory
+        avif_bytes_io = io.BytesIO()
+        # Use 'lossless=True' for true lossless compression
+        img.save(avif_bytes_io, format="AVIF", lossless=True) 
+        avif_bytes_io.seek(0)
+        logging.info(f"Successfully converted PNG to AVIF. Original size: {len(response.content)} bytes, AVIF size: {len(avif_bytes_io.getvalue())} bytes")
+        return avif_bytes_io.getvalue()
+    except Exception as e:
+        logging.error(f"Failed to convert PNG to AVIF from URL {png_url}: {e}", exc_info=True)
+        return None
+
+async def cloudinary_upload(
+    file_data: Union[str, bytes], 
+    preset: Optional[str] = None, 
+    resource_type: str = "image", 
+    format: Optional[str] = None
+) -> Optional[Dict[str, str]]:
+    """
+    Uploads a file to Cloudinary.
+    Can accept either a URL (str) or raw image data (bytes).
+    """
+    is_url = isinstance(file_data, str)
+    log_msg = f"Uploading {'URL' if is_url else 'bytes'} to Cloudinary"
+    if format:
+        log_msg += f" with format: {format}"
+    logging.info(log_msg)
+
     last_exc = None
     for attempt in range(1, 4):
         try:
-            logging.info(f"Upload attempt {attempt} for URL: {url}")
+            logging.info(f"Upload attempt {attempt}")
+            options = {"resource_type": resource_type}
             if preset:
-                res = cld_upload(url, upload_preset=preset)
+                options["upload_preset"] = preset
+            if format:
+                options["format"] = format # Pass the format directly to Cloudinary
+
+            if is_url:
+                res = cld_upload(file_data, **options)
             else:
-                res = cld_upload(url)
+                # For bytes, cld_upload expects a file-like object or bytes
+                res = cld_upload(io.BytesIO(file_data), **options)
+            
             logging.info(f"Uploaded to Cloudinary: {res['secure_url']}")
             return {"secure_url": res["secure_url"], "public_id": res["public_id"]}
         except Exception as e:
             logging.warning(f"Upload attempt {attempt} failed: {e}")
             last_exc = e
             await asyncio.sleep(1)
-    logging.error(f"Failed to upload URL after 3 attempts: {url}")
+    logging.error(f"Failed to upload after 3 attempts: {last_exc}", exc_info=True)
     return None
 
 async def generate_painting(photo_url: str) -> str:
@@ -369,18 +420,21 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url (if available)
             painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, style_image_url)
 
-            # Integrate with existing pipeline steps
-            # Note: We are not uploading the *source* photo to Cloudinary here,
-            # only the *generated* painting. The original photo is assumed to be
-            # accessible via URL for the generation step.
-            final_cld = await cloudinary_upload(painted_png, preset=CLOUD_PRESET)
+            # Convert the generated PNG to AVIF
+            avif_data = await convert_to_avif(painted_png)
+            if avif_data is None:
+                logging.error(f"AVIF conversion failed for style {style_id}; skipping Cloudinary upload.")
+                continue
+
+            # Upload the AVIF data to Cloudinary
+            final_cld = await cloudinary_upload(avif_data, preset=CLOUD_PRESET, format="avif")
             if final_cld is None:
                 logging.error(f"Cloudinary upload of style painting failed for style {style_id}; skipping.")
                 continue
 
-            # Analyse painting - use style title for location_name and a generic description
+            # Analyse painting using the original PNG URL, as OpenAI API might not support AVIF directly
             style_title = style_row.get("Title", "Artwork")
-            meta = await analyse_painting(final_cld["secure_url"], f"Artwork in {style_title} style", style_title)
+            meta = await analyse_painting(painted_png, f"Artwork in {style_title} style", style_title)
 
             # Create artwork record, linking to the original photo details from the webhook and the style
             art_uuid = str(uuid.uuid4())
@@ -420,12 +474,22 @@ async def pipeline(photo: PhotoRow) -> None:
             return
         src_url = src["secure_url"]
         src_public_id = src["public_id"]
-        painted_png = await generate_painting(src_url)
-        final_cld = await cloudinary_upload(painted_png, preset=CLOUD_PRESET)
-        if final_cld is None:
-            logging.error(f"Cloudinary upload of painting failed for photo {photo.Id}; marking as failed and skipping.")
+        painted_png_url = await generate_painting(src_url)
+        
+        # Convert the generated PNG to AVIF
+        avif_data = await convert_to_avif(painted_png_url)
+        if avif_data is None:
+            logging.error(f"AVIF conversion failed for photo {photo.Id}; skipping Cloudinary upload.")
             return
-        meta = await analyse_painting(painted_png, photo.description or "", photo.description or "Berlin")
+
+        # Upload the AVIF data to Cloudinary
+        final_cld = await cloudinary_upload(avif_data, preset=CLOUD_PRESET, format="avif")
+        if final_cld is None:
+            logging.error(f"Cloudinary upload of AVIF painting failed for photo {photo.Id}; marking as failed and skipping.")
+            return
+        
+        # Analyse painting using the original PNG URL, as OpenAI API might not support AVIF directly
+        meta = await analyse_painting(painted_png_url, photo.description or "", photo.description or "Berlin")
         # Determine Catchment ID (object or _id)
         catch_id = None
         if hasattr(photo, "Catchments_id"):

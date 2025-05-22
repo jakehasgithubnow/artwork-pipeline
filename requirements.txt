@@ -1,7 +1,8 @@
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-httpx==0.27.0
-pydantic==2.7.1
-python-dotenv==1.0.1
-cloudinary==1.44.0
-openai==1.26.0
+fastapi
+uvicorn
+python-dotenv
+httpx
+cloudinary
+openai
+Pillow
+Pillow-AVIF
