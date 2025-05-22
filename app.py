@@ -144,8 +144,18 @@ async def cloudinary_upload(
             options = {}
             if preset:
                 options["upload_preset"] = preset
+
+            # Extract format from transformations if present, and pass it as a direct parameter
+            upload_format = None
             if transformations:
-                options["transformation"] = transformations # Apply transformations
+                # Create a mutable copy to modify
+                temp_transformations = transformations.copy()
+                if "format" in temp_transformations:
+                    upload_format = temp_transformations.pop("format")
+                    options["format"] = upload_format # Pass format directly
+
+                if temp_transformations: # If other transformations remain, apply them
+                    options["transformation"] = temp_transformations
 
             res = cld_upload(url, **options)
             
