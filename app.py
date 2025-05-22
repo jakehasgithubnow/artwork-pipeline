@@ -3,14 +3,11 @@ import re
 import uuid
 import json
 import asyncio
-import io
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
-
-from PIL import Image, ImageSequence
 
 import cloudinary
 from cloudinary.uploader import upload as cld_upload, destroy as cld_destroy
@@ -127,63 +124,30 @@ async def mark_photo_not_ready(photo_id: int) -> None:
         else:
             raise
 
-async def convert_to_avif(png_url: str) -> Optional[bytes]:
-    """Downloads a PNG image and converts it to AVIF format in memory."""
-    logging.info(f"Converting PNG from URL to AVIF: {png_url}")
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(png_url)
-            response.raise_for_status()
-        
-        img_bytes = io.BytesIO(response.content)
-        img = Image.open(img_bytes)
-
-        # Ensure the image is in a mode compatible with AVIF (e.g., RGB or RGBA)
-        if img.mode not in ("RGB", "RGBA"):
-            img = img.convert("RGBA")
-
-        # Save to AVIF in memory
-        avif_bytes_io = io.BytesIO()
-        # Use 'lossless=True' for true lossless compression
-        img.save(avif_bytes_io, format="AVIF", lossless=True) 
-        avif_bytes_io.seek(0)
-        logging.info(f"Successfully converted PNG to AVIF. Original size: {len(response.content)} bytes, AVIF size: {len(avif_bytes_io.getvalue())} bytes")
-        return avif_bytes_io.getvalue()
-    except Exception as e:
-        logging.error(f"Failed to convert PNG to AVIF from URL {png_url}: {e}", exc_info=True)
-        return None
-
 async def cloudinary_upload(
-    file_data: Union[str, bytes], 
+    url: str, 
     preset: Optional[str] = None, 
-    resource_type: str = "image", 
-    format: Optional[str] = None
+    transformations: Optional[Dict[str, Any]] = None
 ) -> Optional[Dict[str, str]]:
     """
-    Uploads a file to Cloudinary.
-    Can accept either a URL (str) or raw image data (bytes).
+    Uploads a file to Cloudinary from a URL, with optional transformations.
     """
-    is_url = isinstance(file_data, str)
-    log_msg = f"Uploading {'URL' if is_url else 'bytes'} to Cloudinary"
-    if format:
-        log_msg += f" with format: {format}"
+    log_msg = f"Uploading URL to Cloudinary: {url}"
+    if transformations:
+        log_msg += f" with transformations: {transformations}"
     logging.info(log_msg)
 
     last_exc = None
     for attempt in range(1, 4):
         try:
-            logging.info(f"Upload attempt {attempt}")
-            options = {"resource_type": resource_type}
+            logging.info(f"Upload attempt {attempt} for URL: {url}")
+            options = {}
             if preset:
                 options["upload_preset"] = preset
-            if format:
-                options["format"] = format # Pass the format directly to Cloudinary
+            if transformations:
+                options["transformation"] = transformations # Apply transformations
 
-            if is_url:
-                res = cld_upload(file_data, **options)
-            else:
-                # For bytes, cld_upload expects a file-like object or bytes
-                res = cld_upload(io.BytesIO(file_data), **options)
+            res = cld_upload(url, **options)
             
             logging.info(f"Uploaded to Cloudinary: {res['secure_url']}")
             return {"secure_url": res["secure_url"], "public_id": res["public_id"]}
@@ -191,7 +155,7 @@ async def cloudinary_upload(
             logging.warning(f"Upload attempt {attempt} failed: {e}")
             last_exc = e
             await asyncio.sleep(1)
-    logging.error(f"Failed to upload after 3 attempts: {last_exc}", exc_info=True)
+    logging.error(f"Failed to upload URL after 3 attempts: {url}", exc_info=True)
     return None
 
 async def generate_painting(photo_url: str) -> str:
@@ -420,14 +384,12 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url (if available)
             painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, style_image_url)
 
-            # Convert the generated PNG to AVIF
-            avif_data = await convert_to_avif(painted_png)
-            if avif_data is None:
-                logging.error(f"AVIF conversion failed for style {style_id}; skipping Cloudinary upload.")
-                continue
-
-            # Upload the AVIF data to Cloudinary
-            final_cld = await cloudinary_upload(avif_data, preset=CLOUD_PRESET, format="avif")
+            # Upload the generated PNG to Cloudinary with AVIF transformation
+            final_cld = await cloudinary_upload(
+                painted_png, 
+                preset=CLOUD_PRESET, 
+                transformations={"format": "avif", "quality": "auto:best"}
+            )
             if final_cld is None:
                 logging.error(f"Cloudinary upload of style painting failed for style {style_id}; skipping.")
                 continue
@@ -476,14 +438,12 @@ async def pipeline(photo: PhotoRow) -> None:
         src_public_id = src["public_id"]
         painted_png_url = await generate_painting(src_url)
         
-        # Convert the generated PNG to AVIF
-        avif_data = await convert_to_avif(painted_png_url)
-        if avif_data is None:
-            logging.error(f"AVIF conversion failed for photo {photo.Id}; skipping Cloudinary upload.")
-            return
-
-        # Upload the AVIF data to Cloudinary
-        final_cld = await cloudinary_upload(avif_data, preset=CLOUD_PRESET, format="avif")
+        # Upload the generated PNG to Cloudinary with AVIF transformation
+        final_cld = await cloudinary_upload(
+            painted_png_url, 
+            preset=CLOUD_PRESET, 
+            transformations={"format": "avif", "quality": "auto:best"}
+        )
         if final_cld is None:
             logging.error(f"Cloudinary upload of AVIF painting failed for photo {photo.Id}; marking as failed and skipping.")
             return
