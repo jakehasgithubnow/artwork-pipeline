@@ -3,11 +3,14 @@ import re
 import uuid
 import json
 import asyncio
-from typing import Any, Dict, List, Optional
+import io
+import tempfile
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
+from PIL import Image
 
 import cloudinary
 from cloudinary.uploader import upload as cld_upload, destroy as cld_destroy
@@ -124,15 +127,39 @@ async def mark_photo_not_ready(photo_id: int) -> None:
         else:
             raise
 
+async def download_and_convert_to_webp(url: str) -> bytes:
+    """Downloads an image from a URL and converts it to WebP format in memory."""
+    logging.info(f"Downloading and converting to WebP: {url}")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        img_bytes = response.content
+
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        # Convert to RGB if not already, as WebP doesn't support all modes (e.g., RGBA for transparency)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        
+        webp_buffer = io.BytesIO()
+        img.save(webp_buffer, format="webp", lossless=True)
+        webp_bytes = webp_buffer.getvalue()
+        logging.info(f"Successfully converted image from {url} to WebP ({len(webp_bytes)} bytes)")
+        return webp_bytes
+    except Exception as e:
+        logging.error(f"Failed to convert image from {url} to WebP: {e}", exc_info=True)
+        raise
+
 async def cloudinary_upload(
-    url: str, 
+    file_source: Union[str, bytes], 
     preset: Optional[str] = None, 
     transformations: Optional[Dict[str, Any]] = None
 ) -> Optional[Dict[str, str]]:
     """
-    Uploads a file to Cloudinary from a URL, with optional transformations.
+    Uploads a file to Cloudinary from a URL or bytes, with optional transformations.
+    If file_source is bytes, it's saved to a temporary file before upload.
     """
-    log_msg = f"Uploading URL to Cloudinary: {url}"
+    log_msg = f"Uploading to Cloudinary from source type: {type(file_source)}"
     if transformations:
         log_msg += f" with transformations: {transformations}"
     logging.info(log_msg)
@@ -140,24 +167,25 @@ async def cloudinary_upload(
     last_exc = None
     for attempt in range(1, 4):
         try:
-            logging.info(f"Upload attempt {attempt} for URL: {url}")
+            logging.info(f"Upload attempt {attempt}")
             options = {}
             if preset:
                 options["upload_preset"] = preset
-
-            # Extract format from transformations if present, and pass it as a direct parameter
-            upload_format = None
             if transformations:
-                # Create a mutable copy to modify
-                temp_transformations = transformations.copy()
-                if "format" in temp_transformations:
-                    upload_format = temp_transformations.pop("format")
-                    options["format"] = upload_format # Pass format directly
+                options["transformation"] = transformations
 
-                if temp_transformations: # If other transformations remain, apply them
-                    options["transformation"] = temp_transformations
-
-            res = cld_upload(url, **options)
+            if isinstance(file_source, bytes):
+                # Save bytes to a temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".webp") as temp_file:
+                    temp_file.write(file_source)
+                    temp_file_path = temp_file.name
+                
+                logging.info(f"Uploading temporary file: {temp_file_path}")
+                res = cld_upload(temp_file_path, **options)
+                os.unlink(temp_file_path) # Clean up the temporary file
+            else: # Assume it's a URL string
+                logging.info(f"Uploading URL: {file_source}")
+                res = cld_upload(file_source, **options)
             
             logging.info(f"Uploaded to Cloudinary: {res['secure_url']}")
             return {"secure_url": res["secure_url"], "public_id": res["public_id"]}
@@ -165,7 +193,7 @@ async def cloudinary_upload(
             logging.warning(f"Upload attempt {attempt} failed: {e}")
             last_exc = e
             await asyncio.sleep(1)
-    logging.error(f"Failed to upload URL after 3 attempts: {url}", exc_info=True)
+    logging.error(f"Failed to upload source after 3 attempts", exc_info=True)
     return None
 
 async def generate_painting(photo_url: str) -> str:
@@ -394,11 +422,13 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url (if available)
             painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, style_image_url)
 
-            # Upload the generated PNG to Cloudinary with AVIF transformation
+            # Download and convert the generated PNG to WebP locally
+            webp_bytes = await download_and_convert_to_webp(painted_png)
+
+            # Upload the locally converted WebP bytes to Cloudinary
             final_cld = await cloudinary_upload(
-                painted_png, 
-                preset=CLOUD_PRESET, 
-                transformations={"format": "avif", "quality": "auto:best"}
+                webp_bytes, 
+                preset=CLOUD_PRESET
             )
             if final_cld is None:
                 logging.error(f"Cloudinary upload of style painting failed for style {style_id}; skipping.")
@@ -440,19 +470,16 @@ async def pipeline(photo: PhotoRow) -> None:
     try:
         # Immediately mark photo as not ready to prevent duplicate webhooks
         await mark_photo_not_ready(photo.Id)
-        src = await cloudinary_upload(photo.url, preset="basic_upload")
-        if src is None:
-            logging.error(f"Cloudinary upload failed for photo {photo.Id}; marking as failed and skipping.")
-            return
-        src_url = src["secure_url"]
-        src_public_id = src["public_id"]
-        painted_png_url = await generate_painting(src_url)
+        # Use the source URL directly for painting generation
+        painted_png_url = await generate_painting(photo.url)
         
-        # Upload the generated PNG to Cloudinary with AVIF transformation
+        # Download and convert the generated PNG to WebP locally
+        webp_bytes = await download_and_convert_to_webp(painted_png_url)
+        
+        # Upload the locally converted WebP bytes to Cloudinary
         final_cld = await cloudinary_upload(
-            painted_png_url, 
-            preset=CLOUD_PRESET, 
-            transformations={"format": "avif", "quality": "auto:best"}
+            webp_bytes,
+            preset=CLOUD_PRESET
         )
         if final_cld is None:
             logging.error(f"Cloudinary upload of AVIF painting failed for photo {photo.Id}; marking as failed and skipping.")
@@ -477,8 +504,7 @@ async def pipeline(photo: PhotoRow) -> None:
         art_uuid = str(uuid.uuid4())
         artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo.Id, catch_id, loc_id)
 
-        logging.info(f"Deleting source image from Cloudinary: {src_public_id}")
-        cld_destroy(src_public_id)
+        # No need to delete source image from Cloudinary as it's not uploaded there
     except Exception as ex:
         logging.error(f"Error in pipeline for photo {photo.Id}: {ex}", exc_info=True)
         # No retry logic here, the exception is effectively handled by logging
@@ -538,14 +564,8 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     # Always trigger style processing, regardless of the incoming photo's ready status transition
     # Pass the photo details from the webhook to the style processing task
     if photo_id and photo_url:
-        logging.info(f"Uploading source photo {photo_id} to Cloudinary for style processing")
-        src_cld = await cloudinary_upload(photo_url, preset="basic_upload") # Use basic_upload preset
-        if src_cld is None:
-            logging.error(f"Cloudinary upload failed for source photo {photo_id} for style processing; skipping.")
-        else:
-            cloudinary_photo_url = src_cld["secure_url"]
-            logging.info(f"Adding style processing task for photo {photo_id} with Cloudinary URL: {cloudinary_photo_url}")
-            background_tasks.add_task(process_styles_for_photo, cloudinary_photo_url, photo_id, catch_id, loc_id) # Pass Cloudinary URL
+        logging.info(f"Adding style processing task for photo {photo_id} with source URL: {photo_url}")
+        background_tasks.add_task(process_styles_for_photo, photo_url, photo_id, catch_id, loc_id) # Pass original photo_url
     else:
          logging.warning("Skipping style processing task due to missing photo ID or URL in webhook payload")
 
