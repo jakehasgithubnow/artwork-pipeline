@@ -81,6 +81,8 @@ class PhotoRow(BaseModel):
     Id: int
     url: str
     description: Optional[str] = None
+    country: Optional[str] = None
+    town: Optional[str] = None
 
     # Allow arbitrary extra fields (e.g. Catchments_id, locations_id, etc.)
     model_config = ConfigDict(extra="allow")
@@ -230,10 +232,19 @@ async def generate_painting(photo_url: str) -> str:
         logging.info(f"PiAPI returned painting URL: {m.group(0)}")
         return m.group(0)
 
-async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[str, Any]:
+async def analyse_painting(png_url: str, desc: str, location_name: str, city: Optional[str] = None, country: Optional[str] = None) -> Dict[str, Any]:
     logging.info(f"Analysing painting at {png_url}")
     from openai import AsyncOpenAI
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    
+    location_context = ""
+    if city and country:
+        location_context = f" in {city}, {country}"
+    elif city:
+        location_context = f" in {city}"
+    elif country:
+        location_context = f" in {country}"
+
     prompt = (
         "Does this image look like a handmade painting? Respond ‘true’ or ‘false’.\n\n"
         "Is the composition attractive? Respond ‘true’ or ‘false’.\n\n"
@@ -244,7 +255,7 @@ async def analyse_painting(png_url: str, desc: str, location_name: str) -> Dict[
         "What are the secondary colours? Respond with a comma-separated list of colours.\n\n"
         "Now, imagine you’re a literary lifestyle blogger—cool, slightly poetic, never pretentious. "
         "Write a short description of the painting."
-        "The scene is {desc}. Keep it inviting and artfully unforced. Write in German. Your audience are local to the area.\n\n"
+        f"The scene is {{desc}}{location_context}. Keep it inviting and artfully unforced. Write in German. Write as if both you and the reader are local to the area.\n\n"
         "Next, craft a simple, evocative title that highlights the location—think of a short travel-meets-art headline. "
         "Keep it genuine, lightly poetic, again in the language spoken in German.\n\n"
         "Respond in JSON exactly like this:\n"
@@ -401,7 +412,7 @@ async def mark_style_not_ready(style_id: int) -> None:
             else:
                 raise # Re-raise the exception after max retries
 
-async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int]) -> None:
+async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int], city: Optional[str] = None, country: Optional[str] = None) -> None:
     """Processes ready styles from the styles table for a given photo."""
     logging.info(f"Starting style processing for photo {photo_id}")
     ready_styles = await get_ready_styles()
@@ -436,7 +447,7 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
 
             # Analyse painting using the original PNG URL, as OpenAI API might not support AVIF directly
             style_title = style_row.get("Title", "Artwork")
-            meta = await analyse_painting(painted_png, f"Artwork in {style_title} style", style_title)
+            meta = await analyse_painting(painted_png, f"Artwork in {style_title} style", style_title, city, country)
 
             # Create artwork record, linking to the original photo details from the webhook and the style
             art_uuid = str(uuid.uuid4())
@@ -486,7 +497,13 @@ async def pipeline(photo: PhotoRow) -> None:
             return
         
         # Analyse painting using the original PNG URL, as OpenAI API might not support AVIF directly
-        meta = await analyse_painting(painted_png_url, photo.description or "", photo.description or "Berlin")
+        meta = await analyse_painting(
+            painted_png_url,
+            photo.description or "",
+            photo.description or "Berlin", # location_name
+            photo.town, # city
+            photo.country # country
+        )
         # Determine Catchment ID (object or _id)
         catch_id = None
         if hasattr(photo, "Catchments_id"):
@@ -565,7 +582,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     # Pass the photo details from the webhook to the style processing task
     if photo_id and photo_url:
         logging.info(f"Adding style processing task for photo {photo_id} with source URL: {photo_url}")
-        background_tasks.add_task(process_styles_for_photo, photo_url, photo_id, catch_id, loc_id) # Pass original photo_url
+        background_tasks.add_task(process_styles_for_photo, photo_url, photo_id, catch_id, loc_id, photo_row_obj.town, photo_row_obj.country)
     else:
          logging.warning("Skipping style processing task due to missing photo ID or URL in webhook payload")
 
