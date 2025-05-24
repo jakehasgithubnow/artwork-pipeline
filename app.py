@@ -253,7 +253,7 @@ async def analyse_painting(png_url: str, desc: str, location_name: str, city: Op
         "Is the format landscape (horizontal) or portrait (vertical)? Respond ‘horizontal’ or ‘vertical’.\n\n"
         "What is the main colour? Respond with a single colour.\n\n"
         "What are the secondary colours? Respond with a comma-separated list of colours.\n\n"
-        "Now, imagine you’re a literary lifestyle blogger—cool, slightly poetic, never pretentious. "
+        "Now, imagine you’re an art/lifestyle blogger. You're cool, subtly poetic, not pretentious. "
         "Write a short description of the painting."
         f"The scene is {{desc}}{location_context}. Keep it inviting and artfully unforced. Write in German. Write as if both you and the reader are local to the area.\n\n"
         "Next, craft a simple, evocative title that highlights the location—think of a short travel-meets-art headline. "
