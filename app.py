@@ -144,7 +144,7 @@ async def download_and_convert_to_webp(url: str) -> bytes:
             img = img.convert("RGB")
         
         webp_buffer = io.BytesIO()
-        img.save(webp_buffer, format="webp", lossless=True)
+        img.save(webp_buffer, format="webp", quality=85)
         webp_bytes = webp_buffer.getvalue()
         logging.info(f"Successfully converted image from {url} to WebP ({len(webp_bytes)} bytes)")
         return webp_bytes
@@ -155,7 +155,8 @@ async def download_and_convert_to_webp(url: str) -> bytes:
 async def cloudinary_upload(
     file_source: Union[str, bytes], 
     preset: Optional[str] = None, 
-    transformations: Optional[Dict[str, Any]] = None
+    transformations: Optional[Dict[str, Any]] = None,
+    public_id: Optional[str] = None
 ) -> Optional[Dict[str, str]]:
     """
     Uploads a file to Cloudinary from a URL or bytes, with optional transformations.
@@ -175,6 +176,8 @@ async def cloudinary_upload(
                 options["upload_preset"] = preset
             if transformations:
                 options["transformation"] = transformations
+            if public_id:
+                options["public_id"] = public_id
 
             if isinstance(file_source, bytes):
                 # Save bytes to a temporary file
@@ -436,10 +439,18 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             # Download and convert the generated PNG to WebP locally
             webp_bytes = await download_and_convert_to_webp(painted_png)
 
-            # Upload the locally converted WebP bytes to Cloudinary
+            # Generate a consistent public_id for the style-generated artwork
+            # This helps in overwriting existing images if the process is re-run
+            art_uuid = str(uuid.uuid4()) # Generate a UUID for the artwork
+            # Use a combination of photo_id, style_id, and a unique identifier for the public_id
+            # This ensures uniqueness and allows for potential overwriting if the same style is re-processed for the same photo
+            public_id_for_style_artwork = f"artwork_photo_{photo_id}_style_{style_id}_{art_uuid}"
+
+            # Upload the locally converted WebP bytes to Cloudinary, using the generated public_id
             final_cld = await cloudinary_upload(
                 webp_bytes, 
-                preset=CLOUD_PRESET
+                preset=CLOUD_PRESET,
+                public_id=public_id_for_style_artwork
             )
             if final_cld is None:
                 logging.error(f"Cloudinary upload of style painting failed for style {style_id}; skipping.")
@@ -450,7 +461,7 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             meta = await analyse_painting(painted_png, f"Artwork in {style_title} style", style_title, city, country)
 
             # Create artwork record, linking to the original photo details from the webhook and the style
-            art_uuid = str(uuid.uuid4())
+            # Use the same art_uuid generated earlier for the public_id
             try:
                 artwork_id = await create_artwork_record(meta, final_cld["secure_url"], art_uuid, photo_id, catch_id, loc_id, style_id)
                 logging.info(f"Successfully created artwork record {artwork_id} for style {style_id}, photo {photo_id}")
