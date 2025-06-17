@@ -83,6 +83,7 @@ class PhotoRow(BaseModel):
     description: Optional[str] = None
     country: Optional[str] = None
     town: Optional[str] = None
+    location_name: Optional[str] = None
 
     # Allow arbitrary extra fields (e.g. Catchments_id, locations_id, etc.)
     model_config = ConfigDict(extra="allow")
@@ -201,10 +202,18 @@ async def cloudinary_upload(
     logging.error(f"Failed to upload source after 3 attempts", exc_info=True)
     return None
 
-async def generate_painting(photo_url: str) -> str:
+async def generate_painting(photo_url: str, location_name: str) -> str:
     async with _piapi_semaphore:
         logging.info("Acquired PiAPI semaphore for image generation")
         logging.info(f"Generating painting for photo URL: {photo_url}")
+        
+        prompt_text = (
+            f"Paint this like Matisse. Your output must be recognisable as {location_name} "
+            "but you must change the composition as much as necessary for it to feel like a Matisse masterpiece- "
+            "feel free to remove people, cars and all text. Ignore clouds, render the sky a flat blue or grey. "
+            "Output a 16:9 rectangle (either orientation)."
+        )
+
         payload = {
             "model": "gpt-4o-image",
             "messages": [
@@ -213,9 +222,7 @@ async def generate_painting(photo_url: str) -> str:
                     "content": [
                         {"type": "image_url", "image_url": {"url": photo_url}},
                         {"type": "image_url", "image_url": {"url": "https://i.postimg.cc/ZYGSGGdd/image.png"}},
-                        {"type": "text", "text": (
-                            "Paint this like Matisse. Your output must be recognisable as {location_name} but you must change the composition as much as necessary for it to feel like a Matisse masterpiece- feel free to remove people, cars and all text. Ignore clouds, render the sky a flat blue or grey. Output a 16:9 rectangle (either orientation)."
-                        )},
+                        {"type": "text", "text": prompt_text},
                     ],
                 }
             ],
@@ -345,11 +352,15 @@ async def get_ready_styles() -> List[Dict[str, Any]]:
         logging.error(f"Error querying styles table: {exc}", exc_info=True)
         return []
 
-async def generate_painting_with_style(base_photo_url: str, style_prompt: str, style_image_url: Optional[str] = None) -> str:
+async def generate_painting_with_style(base_photo_url: str, style_prompt: str, location_name: str, style_image_url: Optional[str] = None) -> str:
     """Generates a painting using a base photo, a text prompt, and an optional style image."""
     async with _piapi_semaphore:
         logging.info("Acquired PiAPI semaphore for style image generation")
-        log_message = f"Generating painting for base photo URL: {base_photo_url} with style prompt: {style_prompt}"
+        
+        # Replace {location_name} placeholder in the prompt
+        final_prompt = style_prompt.format(location_name=location_name)
+
+        log_message = f"Generating painting for base photo URL: {base_photo_url} with style prompt: {final_prompt}"
         if style_image_url:
             log_message += f" and style image: {style_image_url}"
         logging.info(log_message)
@@ -359,7 +370,7 @@ async def generate_painting_with_style(base_photo_url: str, style_prompt: str, s
         ]
         if style_image_url:
             content_blocks.append({"type": "image_url", "image_url": {"url": style_image_url}})
-        content_blocks.append({"type": "text", "text": style_prompt})
+        content_blocks.append({"type": "text", "text": final_prompt})
 
         payload = {
             "model": "gpt-4o-image",
@@ -415,7 +426,7 @@ async def mark_style_not_ready(style_id: int) -> None:
             else:
                 raise # Re-raise the exception after max retries
 
-async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int], city: Optional[str] = None, country: Optional[str] = None) -> None:
+async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, catch_id: Optional[int], loc_id: Optional[int], location_name: str, city: Optional[str] = None, country: Optional[str] = None) -> None:
     """Processes ready styles from the styles table for a given photo."""
     logging.info(f"Starting style processing for photo {photo_id}")
     ready_styles = await get_ready_styles()
@@ -434,7 +445,7 @@ async def process_styles_for_photo(cloudinary_photo_url: str, photo_id: int, cat
             logging.info(f"Using style_id {style_id} for artwork record creation.")
 
             # Generate painting using cloudinary_photo_url, style_prompt, and style_image_url (if available)
-            painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, style_image_url)
+            painted_png = await generate_painting_with_style(cloudinary_photo_url, style_prompt, location_name, style_image_url)
 
             # Download and convert the generated PNG to WebP locally
             webp_bytes = await download_and_convert_to_webp(painted_png)
@@ -493,7 +504,7 @@ async def pipeline(photo: PhotoRow) -> None:
         # Immediately mark photo as not ready to prevent duplicate webhooks
         await mark_photo_not_ready(photo.Id)
         # Use the source URL directly for painting generation
-        painted_png_url = await generate_painting(photo.url)
+        painted_png_url = await generate_painting(photo.url, photo.location_name or "the location")
         
         # Download and convert the generated PNG to WebP locally
         webp_bytes = await download_and_convert_to_webp(painted_png_url)
@@ -558,6 +569,10 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     # Determine Catchment ID (object or _id) and Location ID (object or _id) from the webhook payload
     # Need to parse the row to access attributes like Catchments_id or Catchments
     try:
+        # Manually add 'location_name' to the row dict before parsing
+        if 'location name' in row:
+            row['location_name'] = row['location name']
+
         photo_row_obj = PhotoRow.parse_obj(row)
         catch_id = None
         if hasattr(photo_row_obj, "Catchments_id"):
@@ -573,6 +588,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
 
         photo_id = photo_row_obj.Id
         photo_url = photo_row_obj.url
+        location_name = photo_row_obj.location_name or "the location"
 
     except Exception as e:
         logging.error(f"Error parsing webhook payload or extracting photo details: {e}", exc_info=True)
@@ -593,7 +609,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
     # Pass the photo details from the webhook to the style processing task
     if photo_id and photo_url:
         logging.info(f"Adding style processing task for photo {photo_id} with source URL: {photo_url}")
-        background_tasks.add_task(process_styles_for_photo, photo_url, photo_id, catch_id, loc_id, photo_row_obj.town, photo_row_obj.country)
+        background_tasks.add_task(process_styles_for_photo, photo_url, photo_id, catch_id, loc_id, location_name, photo_row_obj.town, photo_row_obj.country)
     else:
          logging.warning("Skipping style processing task due to missing photo ID or URL in webhook payload")
 
